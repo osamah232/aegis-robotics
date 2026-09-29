@@ -14,35 +14,31 @@ class Environment:
         return (x, y) in self.obstacles
 
     def distance_to_obstacle(self, x, y, direction):
+        dx, dy = {
+            "up": (0, 1),
+            "down": (0, -1),
+            "right": (1, 0),
+            "left": (-1, 0)
+        }[direction]
+
         distance = 0
+        current_x = x + dx
+        current_y = y + dy
 
-        if direction == "up":
-            while self.is_inside(x, y + distance + 1):
-                if self.is_obstacle(x, y + distance + 1):
-                    return distance + 1
-                distance += 1
+        while self.is_inside(current_x, current_y):
+            if self.is_obstacle(current_x, current_y):
+                return distance + 1
 
-        elif direction == "down":
-            while self.is_inside(x, y - distance - 1):
-                if self.is_obstacle(x, y - distance - 1):
-                    return distance + 1
-                distance += 1
-
-        elif direction == "right":
-            while self.is_inside(x + distance + 1, y):
-                if self.is_obstacle(x + distance + 1, y):
-                    return distance + 1
-                distance += 1
-
-        elif direction == "left":
-            while self.is_inside(x - distance - 1, y):
-                if self.is_obstacle(x - distance - 1, y):
-                    return distance + 1
-                distance += 1
+            distance += 1
+            current_x += dx
+            current_y += dy
 
         return None
 
-    def find_path(self, start, target):
+    def find_path(self, start, target, blocked_positions=None):
+        if blocked_positions is None:
+            blocked_positions = set()
+
         queue = deque([start])
         visited = {start}
         previous = {start: None}
@@ -58,7 +54,15 @@ class Environment:
             current = queue.popleft()
 
             if current == target:
-                break
+                path = []
+                node = current
+
+                while node is not None:
+                    path.append(node)
+                    node = previous[node]
+
+                path.reverse()
+                return path
 
             for dx, dy in directions:
                 next_position = (
@@ -81,23 +85,17 @@ class Environment:
                 ):
                     continue
 
+                if (
+                    next_position in blocked_positions
+                    and next_position != target
+                ):
+                    continue
+
                 visited.add(next_position)
                 previous[next_position] = current
                 queue.append(next_position)
 
-        if target not in visited:
-            return None
-
-        path = []
-        current = target
-
-        while current is not None:
-            path.append(current)
-            current = previous[current]
-
-        path.reverse()
-
-        return path
+        return None
 
 
 class Robot:
@@ -122,22 +120,22 @@ class Robot:
         self.target_y = target_y
 
     def health_check(self):
-        if self.battery <= 10 or self.temperature >= 70:
+        if self.battery <= 20 or self.temperature >= 70:
             return "CRITICAL"
 
-        if self.battery <= 30 or self.temperature >= 60:
+        if self.battery <= 40 or self.temperature >= 60:
             return "WARNING"
 
         return "HEALTHY"
 
     def display_info(self):
-        print(f"Robot: {self.name}")
-        print(f"Battery: {self.battery} %")
-        print(f"Temperature: {self.temperature} °C")
-        print(f"Speed: {self.speed} m/s")
-        print(f"Position: ( {self.x} , {self.y} )")
-        print(f"Target: ( {self.target_x} , {self.target_y} )")
-        print(f"Status: {self.health_check()}")
+        print("Robot:", self.name)
+        print("Battery:", self.battery)
+        print("Temperature:", self.temperature)
+        print("Speed:", self.speed)
+        print("Position:", (self.x, self.y))
+        print("Target:", (self.target_x, self.target_y))
+        print("Health:", self.health_check())
         print()
 
     def consume_battery(self, amount):
@@ -158,6 +156,8 @@ class Robot:
 
         self.x = new_x
         self.y = new_y
+
+        self.consume_battery(1)
 
         return "MOVED"
 
@@ -189,54 +189,60 @@ class Robot:
         if self.x == self.target_x and self.y == self.target_y:
             return "TARGET_REACHED"
 
-        dx = 0
-        dy = 0
+        dx = self.target_x - self.x
+        dy = self.target_y - self.y
 
-        if self.x < self.target_x:
-            dx = 1
-        elif self.x > self.target_x:
-            dx = -1
+        if abs(dx) >= abs(dy):
+            if dx > 0:
+                direction = "right"
+                move = (1, 0)
+            elif dx < 0:
+                direction = "left"
+                move = (-1, 0)
+            elif dy > 0:
+                direction = "up"
+                move = (0, 1)
+            else:
+                direction = "down"
+                move = (0, -1)
+        else:
+            if dy > 0:
+                direction = "up"
+                move = (0, 1)
+            elif dy < 0:
+                direction = "down"
+                move = (0, -1)
+            elif dx > 0:
+                direction = "right"
+                move = (1, 0)
+            else:
+                direction = "left"
+                move = (-1, 0)
 
-        if self.y < self.target_y:
-            dy = 1
-        elif self.y > self.target_y:
-            dy = -1
+        sensors = self.scan(environment)
 
-        sensor = self.scan(environment)
-
-        if dx == 1 and sensor["right"] == 1:
+        if sensors[direction] == 1:
             return "BLOCKED"
 
-        if dx == -1 and sensor["left"] == 1:
-            return "BLOCKED"
-
-        if dy == 1 and sensor["up"] == 1:
-            return "BLOCKED"
-
-        if dy == -1 and sensor["down"] == 1:
-            return "BLOCKED"
-
-        return dx, dy
+        return move
 
     def find_alternative_move(self, environment):
         directions = [
-            (0, 1),
-            (0, -1),
-            (1, 0),
-            (-1, 0)
+            ("up", (0, 1)),
+            ("down", (0, -1)),
+            ("right", (1, 0)),
+            ("left", (-1, 0))
         ]
 
-        for dx, dy in directions:
-            new_x = self.x + dx
-            new_y = self.y + dy
+        for direction, move in directions:
+            distance = environment.distance_to_obstacle(
+                self.x,
+                self.y,
+                direction
+            )
 
-            if not environment.is_inside(new_x, new_y):
-                continue
-
-            if environment.is_obstacle(new_x, new_y):
-                continue
-
-            return dx, dy
+            if distance != 1:
+                return move
 
         return None
 
@@ -250,7 +256,7 @@ class Robot:
             next_move = self.find_alternative_move(environment)
 
             if next_move is None:
-                return "NO_AVAILABLE_MOVE"
+                return "BLOCKED"
 
         dx, dy = next_move
 
@@ -264,20 +270,32 @@ class Robot:
             dx = position[0] - self.x
             dy = position[1] - self.y
 
-            result = self.move(dx, dy, environment)
+            result = self.move(
+                dx,
+                dy,
+                environment
+            )
 
             if result != "MOVED":
                 return result
 
             print(
-                f"{self.name} moved to "
-                f"( {self.x} , {self.y} )"
+                self.name,
+                "moved to",
+                (self.x, self.y)
             )
 
-        if self.x == self.target_x and self.y == self.target_y:
-            return "TARGET_REACHED"
+        return "TARGET_REACHED"
 
-        return "PATH_INCOMPLETE"
+
+class Task:
+    def __init__(self, task_id, target_x, target_y):
+        self.task_id = task_id
+        self.target_x = target_x
+        self.target_y = target_y
+
+    def get_target(self):
+        return (self.target_x, self.target_y)
 
 
 class Fleet:
@@ -305,13 +323,216 @@ class Fleet:
 
         return paths
 
-    def execute_paths(self, paths, environment):
-        for robot in self.robots:
-            path = paths.get(robot.name)
+    def calculate_distance(self, robot, task):
+        return abs(
+            robot.x - task.target_x
+        ) + abs(
+            robot.y - task.target_y
+        )
 
-            print(f"{robot.name} Execution:")
-            print(robot.follow_path(path, environment))
+    def allocate_tasks(self, tasks):
+        assignments = {}
+        available_robots = self.robots.copy()
+
+        for task in tasks:
+            if not available_robots:
+                break
+
+            selected_robot = min(
+                available_robots,
+                key=lambda robot: self.calculate_distance(
+                    robot,
+                    task
+                )
+            )
+
+            assignments[task.task_id] = selected_robot.name
+
+            available_robots.remove(
+                selected_robot
+            )
+
+        return assignments
+
+    def get_blocked_positions(self, current_robot):
+        blocked_positions = set()
+
+        for robot in self.robots:
+            if robot is current_robot:
+                continue
+
+            blocked_positions.add(
+                (robot.x, robot.y)
+            )
+
+        return blocked_positions
+
+    def replan_path(self, robot, environment):
+        start = (robot.x, robot.y)
+        target = (robot.target_x, robot.target_y)
+
+        blocked_positions = self.get_blocked_positions(
+            robot
+        )
+
+        return environment.find_path(
+            start,
+            target,
+            blocked_positions
+        )
+
+    def is_position_occupied(self, position, current_robot):
+        for robot in self.robots:
+            if robot is current_robot:
+                continue
+
+            if (robot.x, robot.y) == position:
+                return True
+
+        return False
+
+    def execute_paths(self, paths, environment):
+        active_paths = dict(paths)
+
+        path_indices = {
+            robot.name: 1
+            for robot in self.robots
+        }
+
+        max_steps = 100
+
+        for step in range(1, max_steps + 1):
+            print("Step", step)
+
+            all_targets_reached = True
+
+            for robot in self.robots:
+                if (
+                    robot.x == robot.target_x
+                    and robot.y == robot.target_y
+                ):
+                    print(
+                        robot.name,
+                        "TARGET_REACHED"
+                    )
+                    continue
+
+                all_targets_reached = False
+
+                path = active_paths.get(
+                    robot.name
+                )
+
+                if path is None:
+                    print(
+                        robot.name,
+                        "NO_PATH"
+                    )
+                    continue
+
+                path_index = path_indices[
+                    robot.name
+                ]
+
+                if path_index >= len(path):
+                    new_path = self.replan_path(
+                        robot,
+                        environment
+                    )
+
+                    if new_path is None:
+                        print(
+                            robot.name,
+                            "NO_PATH"
+                        )
+                        continue
+
+                    active_paths[
+                        robot.name
+                    ] = new_path
+
+                    path_indices[
+                        robot.name
+                    ] = 1
+
+                    path = new_path
+                    path_index = 1
+
+                next_position = path[
+                    path_index
+                ]
+
+                if self.is_position_occupied(
+                    next_position,
+                    robot
+                ):
+                    print(
+                        robot.name,
+                        "ROBOT_COLLISION"
+                    )
+
+                    new_path = self.replan_path(
+                        robot,
+                        environment
+                    )
+
+                    if new_path is not None:
+                        active_paths[
+                            robot.name
+                        ] = new_path
+
+                        path_indices[
+                            robot.name
+                        ] = 1
+
+                        print(
+                            robot.name,
+                            "REPLANNED"
+                        )
+                    else:
+                        print(
+                            robot.name,
+                            "NO_PATH"
+                        )
+
+                    continue
+
+                dx = (
+                    next_position[0]
+                    - robot.x
+                )
+
+                dy = (
+                    next_position[1]
+                    - robot.y
+                )
+
+                result = robot.move(
+                    dx,
+                    dy,
+                    environment
+                )
+
+                if result == "MOVED":
+                    path_indices[
+                        robot.name
+                    ] += 1
+
+                    print(
+                        robot.name,
+                        "moved to",
+                        (robot.x, robot.y)
+                    )
+                else:
+                    print(
+                        robot.name,
+                        result
+                    )
+
             print()
+
+            if all_targets_reached:
+                break
 
 
 environment = Environment(
@@ -325,6 +546,7 @@ environment = Environment(
         (8, 2)
     ]
 )
+
 
 robot1 = Robot(
     "Aegis-01",
@@ -359,20 +581,57 @@ robot3 = Robot(
     2
 )
 
+
 fleet = Fleet()
 
 fleet.add_robot(robot1)
 fleet.add_robot(robot2)
 fleet.add_robot(robot3)
 
-paths = fleet.calculate_paths(environment)
+
+tasks = [
+    Task("Task-01", 8, 8),
+    Task("Task-02", 1, 8),
+    Task("Task-03", 2, 2)
+]
+
+
+assignments = fleet.allocate_tasks(tasks)
+
+print("Task Assignments:")
+print()
+
+for task_id, robot_name in assignments.items():
+    print(
+        task_id,
+        "->",
+        robot_name
+    )
+
+print()
+
+
+paths = fleet.calculate_paths(
+    environment
+)
 
 for robot_name, path in paths.items():
-    print(f"{robot_name} Path:")
+    print(
+        robot_name,
+        "Path:"
+    )
     print(path)
     print()
 
-fleet.execute_paths(paths, environment)
+
+print("Synchronized Fleet Execution:")
+print()
+
+fleet.execute_paths(
+    paths,
+    environment
+)
+
 
 print("Fleet Robots:")
 fleet.display_robots()
