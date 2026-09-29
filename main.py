@@ -10,12 +10,18 @@ class Robot:
 
         if self.battery < 20:
             status = "CRITICAL"
+        elif self.battery < 40:
+            status = "WARNING"
 
         if self.temperature > 70:
             status = "CRITICAL"
+        elif self.temperature > 50 and status != "CRITICAL":
+            status = "WARNING"
 
         if self.speed > 3:
             status = "CRITICAL"
+        elif self.speed > 2.5 and status != "CRITICAL":
+            status = "WARNING"
 
         print("Status:", status)
 
