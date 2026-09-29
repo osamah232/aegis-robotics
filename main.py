@@ -1,9 +1,11 @@
 class Robot:
-    def __init__(self, name, battery, temperature, speed):
+    def __init__(self, name, battery, temperature, speed, x, y):
         self.name = name
         self.battery = battery
         self.temperature = temperature
         self.speed = speed
+        self.x = x
+        self.y = y
 
     def health_check(self):
         status = "HEALTHY"
@@ -30,6 +32,7 @@ class Robot:
         print("Battery:", self.battery, "%")
         print("Temperature:", self.temperature, "°C")
         print("Speed:", self.speed, "m/s")
+        print("Position:", "(", self.x, ",", self.y, ")")
 
         status = self.health_check()
         print("Status:", status)
@@ -41,9 +44,9 @@ class Robot:
             self.battery = 0
 
 
-robot1 = Robot("Aegis-01", 80, 35, 2.5)
-robot2 = Robot("Aegis-02", 60, 40, 2)
-robot3 = Robot("Aegis-03", 10, 75, 3.5)
+robot1 = Robot("Aegis-01", 80, 35, 2.5, 0, 0)
+robot2 = Robot("Aegis-02", 60, 40, 2, 5, 3)
+robot3 = Robot("Aegis-03", 10, 75, 3.5, 10, 7)
 
 robots = [robot1, robot2, robot3]
 
