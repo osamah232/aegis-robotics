@@ -23,6 +23,15 @@ class Robot:
         elif self.speed > 2.5 and status != "CRITICAL":
             status = "WARNING"
 
+        return status
+
+    def display_info(self):
+        print("Robot:", self.name)
+        print("Battery:", self.battery, "%")
+        print("Temperature:", self.temperature, "°C")
+        print("Speed:", self.speed, "m/s")
+
+        status = self.health_check()
         print("Status:", status)
 
 
@@ -33,8 +42,5 @@ robot3 = Robot("Aegis-03", 10, 75, 3.5)
 robots = [robot1, robot2, robot3]
 
 for robot in robots:
-    print("\nRobot:", robot.name)
-    print("Battery:", robot.battery, "%")
-    print("Temperature:", robot.temperature, "°C")
-    print("Speed:", robot.speed, "m/s")
-    robot.health_check()
+    print()
+    robot.display_info()
