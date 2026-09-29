@@ -38,10 +38,12 @@ class Environment:
     def find_path(self, start, target, blocked_positions=None):
         if blocked_positions is None:
             blocked_positions = set()
+        else:
+            blocked_positions = set(blocked_positions)
 
         queue = deque([start])
         visited = {start}
-        previous = {start: None}
+        previous = {}
 
         directions = [
             (0, 1),
@@ -57,11 +59,13 @@ class Environment:
                 path = []
                 node = current
 
-                while node is not None:
+                while node != start:
                     path.append(node)
                     node = previous[node]
 
+                path.append(start)
                 path.reverse()
+
                 return path
 
             for dx, dy in directions:
@@ -70,25 +74,16 @@ class Environment:
                     current[1] + dy
                 )
 
+                if not self.is_inside(*next_position):
+                    continue
+
+                if self.is_obstacle(*next_position):
+                    continue
+
+                if next_position in blocked_positions:
+                    continue
+
                 if next_position in visited:
-                    continue
-
-                if not self.is_inside(
-                    next_position[0],
-                    next_position[1]
-                ):
-                    continue
-
-                if self.is_obstacle(
-                    next_position[0],
-                    next_position[1]
-                ):
-                    continue
-
-                if (
-                    next_position in blocked_positions
-                    and next_position != target
-                ):
                     continue
 
                 visited.add(next_position)
@@ -96,6 +91,20 @@ class Environment:
                 queue.append(next_position)
 
         return None
+
+
+class Task:
+    def __init__(self, task_id, target_x, target_y, priority=1):
+        self.task_id = task_id
+        self.target_x = target_x
+        self.target_y = target_y
+        self.priority = priority
+        self.status = "PENDING"
+        self.assigned_robot = None
+        self.steps_taken = 0
+
+    def get_target(self):
+        return self.target_x, self.target_y
 
 
 class Robot:
@@ -106,43 +115,38 @@ class Robot:
         temperature,
         speed,
         x,
-        y,
-        target_x,
-        target_y
+        y
     ):
         self.name = name
+        self.initial_battery = battery
         self.battery = battery
         self.temperature = temperature
         self.speed = speed
         self.x = x
         self.y = y
-        self.target_x = target_x
-        self.target_y = target_y
+        self.initial_position = (x, y)
+        self.target_x = None
+        self.target_y = None
+        self.status = "IDLE"
+        self.current_task = None
+        self.telemetry = []
+        self.faults = []
+        self.maintenance_required = False
+        self.distance_travelled = 0
+        self.active_steps = 0
+        self.completed_tasks = 0
 
     def health_check(self):
-        if self.battery <= 20 or self.temperature >= 70:
+        if self.battery <= 10 or self.temperature >= 80:
             return "CRITICAL"
 
-        if self.battery <= 40 or self.temperature >= 60:
+        if self.battery <= 30 or self.temperature >= 60:
             return "WARNING"
 
         return "HEALTHY"
 
-    def display_info(self):
-        print("Robot:", self.name)
-        print("Battery:", self.battery)
-        print("Temperature:", self.temperature)
-        print("Speed:", self.speed)
-        print("Position:", (self.x, self.y))
-        print("Target:", (self.target_x, self.target_y))
-        print("Health:", self.health_check())
-        print()
-
     def consume_battery(self, amount):
-        self.battery -= amount
-
-        if self.battery < 0:
-            self.battery = 0
+        self.battery = max(0, self.battery - amount)
 
     def move(self, dx, dy, environment):
         new_x = self.x + dx
@@ -156,383 +160,531 @@ class Robot:
 
         self.x = new_x
         self.y = new_y
-
         self.consume_battery(1)
+        self.distance_travelled += abs(dx) + abs(dy)
+        self.active_steps += 1
+
+        self.record_telemetry()
 
         return "MOVED"
 
-    def scan(self, environment):
-        return {
-            "up": environment.distance_to_obstacle(
-                self.x,
-                self.y,
-                "up"
-            ),
-            "down": environment.distance_to_obstacle(
-                self.x,
-                self.y,
-                "down"
-            ),
-            "right": environment.distance_to_obstacle(
-                self.x,
-                self.y,
-                "right"
-            ),
-            "left": environment.distance_to_obstacle(
-                self.x,
-                self.y,
-                "left"
-            )
-        }
+    def record_telemetry(self):
+        self.telemetry.append({
+            "position": (self.x, self.y),
+            "battery": self.battery,
+            "temperature": self.temperature,
+            "speed": self.speed,
+            "status": self.status
+        })
 
-    def get_next_move(self, environment):
-        if self.x == self.target_x and self.y == self.target_y:
-            return "TARGET_REACHED"
+    def display_info(self):
+        print(
+            self.name,
+            "Position:",
+            (self.x, self.y),
+            "Battery:",
+            self.battery,
+            "Temperature:",
+            self.temperature,
+            "Status:",
+            self.status,
+            "Distance:",
+            self.distance_travelled,
+            "Tasks:",
+            self.completed_tasks
+        )
 
-        dx = self.target_x - self.x
-        dy = self.target_y - self.y
 
-        if abs(dx) >= abs(dy):
-            if dx > 0:
-                direction = "right"
-                move = (1, 0)
-            elif dx < 0:
-                direction = "left"
-                move = (-1, 0)
-            elif dy > 0:
-                direction = "up"
-                move = (0, 1)
-            else:
-                direction = "down"
-                move = (0, -1)
-        else:
-            if dy > 0:
-                direction = "up"
-                move = (0, 1)
-            elif dy < 0:
-                direction = "down"
-                move = (0, -1)
-            elif dx > 0:
-                direction = "right"
-                move = (1, 0)
-            else:
-                direction = "left"
-                move = (-1, 0)
+class FaultDetector:
+    def __init__(self):
+        self.fault_history = []
 
-        sensors = self.scan(environment)
+    def analyze_robot(self, robot):
+        faults = []
 
-        if sensors[direction] == 1:
-            return "BLOCKED"
+        if robot.battery <= 10:
+            faults.append("CRITICAL_BATTERY")
+        elif robot.battery <= 30:
+            faults.append("LOW_BATTERY")
 
-        return move
+        if robot.temperature >= 80:
+            faults.append("CRITICAL_TEMPERATURE")
+        elif robot.temperature >= 60:
+            faults.append("HIGH_TEMPERATURE")
 
-    def find_alternative_move(self, environment):
-        directions = [
-            ("up", (0, 1)),
-            ("down", (0, -1)),
-            ("right", (1, 0)),
-            ("left", (-1, 0))
-        ]
+        if robot.speed <= 0:
+            faults.append("MOTOR_FAILURE")
 
-        for direction, move in directions:
-            distance = environment.distance_to_obstacle(
-                self.x,
-                self.y,
-                direction
-            )
+        for fault in faults:
+            event = {
+                "robot": robot.name,
+                "fault": fault,
+                "battery": robot.battery,
+                "temperature": robot.temperature
+            }
 
-            if distance != 1:
-                return move
+            if event not in self.fault_history:
+                self.fault_history.append(event)
 
-        return None
+            if fault not in robot.faults:
+                robot.faults.append(fault)
 
-    def move_to_target(self, environment):
-        next_move = self.get_next_move(environment)
+        if robot.battery <= 30 or robot.temperature >= 60:
+            robot.maintenance_required = True
 
-        if next_move == "TARGET_REACHED":
-            return "TARGET_REACHED"
+        if (
+            robot.battery <= 10
+            or robot.temperature >= 80
+            or robot.speed <= 0
+        ):
+            robot.status = "FAILED"
 
-        if next_move == "BLOCKED":
-            next_move = self.find_alternative_move(environment)
+        return faults
 
-            if next_move is None:
-                return "BLOCKED"
+    def analyze_fleet(self, fleet):
+        results = {}
 
-        dx, dy = next_move
+        for robot in fleet.robots:
+            results[robot.name] = self.analyze_robot(robot)
 
-        return self.move(dx, dy, environment)
+        return results
 
-    def follow_path(self, path, environment):
-        if path is None:
-            return "NO_PATH"
+    def predict_maintenance(self, robot):
+        if robot.temperature >= 70:
+            return "URGENT"
 
-        for position in path[1:]:
-            dx = position[0] - self.x
-            dy = position[1] - self.y
+        if robot.battery <= 20:
+            return "URGENT"
 
-            result = self.move(
-                dx,
-                dy,
-                environment
-            )
+        if robot.temperature >= 55:
+            return "SOON"
 
-            if result != "MOVED":
-                return result
+        if robot.battery <= 40:
+            return "SOON"
 
+        if robot.faults:
+            return "SOON"
+
+        return "NORMAL"
+
+    def display_faults(self):
+        print("Fault History")
+
+        if not self.fault_history:
+            print("No faults detected.")
+            return
+
+        for event in self.fault_history:
             print(
-                self.name,
-                "moved to",
-                (self.x, self.y)
+                event["robot"],
+                event["fault"],
+                "Battery:",
+                event["battery"],
+                "Temperature:",
+                event["temperature"]
             )
-
-        return "TARGET_REACHED"
-
-
-class Task:
-    def __init__(self, task_id, target_x, target_y):
-        self.task_id = task_id
-        self.target_x = target_x
-        self.target_y = target_y
-
-    def get_target(self):
-        return (self.target_x, self.target_y)
 
 
 class Fleet:
     def __init__(self):
         self.robots = []
+        self.tasks = []
 
     def add_robot(self, robot):
         self.robots.append(robot)
 
-    def display_robots(self):
-        for robot in self.robots:
-            robot.display_info()
+    def add_task(self, task):
+        self.tasks.append(task)
 
-    def calculate_paths(self, environment):
-        paths = {}
-
-        for robot in self.robots:
-            start = (robot.x, robot.y)
-            target = (robot.target_x, robot.target_y)
-
-            paths[robot.name] = environment.find_path(
-                start,
-                target
-            )
-
-        return paths
+    def get_available_robots(self):
+        return [
+            robot
+            for robot in self.robots
+            if robot.status == "IDLE"
+            and robot.health_check() != "CRITICAL"
+            and not robot.maintenance_required
+        ]
 
     def calculate_distance(self, robot, task):
-        return abs(
-            robot.x - task.target_x
-        ) + abs(
-            robot.y - task.target_y
+        return (
+            abs(robot.x - task.target_x)
+            + abs(robot.y - task.target_y)
         )
 
-    def allocate_tasks(self, tasks):
-        assignments = {}
-        available_robots = self.robots.copy()
+    def calculate_robot_score(self, robot, task):
+        distance_score = self.calculate_distance(
+            robot,
+            task
+        )
 
-        for task in tasks:
+        battery_score = (
+            100 - robot.battery
+        ) * 0.3
+
+        speed_score = 10 / max(
+            robot.speed,
+            0.1
+        )
+
+        health_score = 0
+
+        if robot.health_check() == "WARNING":
+            health_score = 10
+
+        return (
+            distance_score
+            + battery_score
+            + speed_score
+            + health_score
+        )
+
+    def allocate_tasks(self):
+        pending_tasks = [
+            task
+            for task in self.tasks
+            if task.status == "PENDING"
+        ]
+
+        pending_tasks.sort(
+            key=lambda task: task.priority,
+            reverse=True
+        )
+
+        for task in pending_tasks:
+            available_robots = self.get_available_robots()
+
             if not available_robots:
                 break
 
-            selected_robot = min(
+            robot = min(
                 available_robots,
-                key=lambda robot: self.calculate_distance(
-                    robot,
+                key=lambda current_robot:
+                self.calculate_robot_score(
+                    current_robot,
                     task
                 )
             )
 
-            assignments[task.task_id] = selected_robot.name
+            task.status = "ASSIGNED"
+            task.assigned_robot = robot.name
 
-            available_robots.remove(
-                selected_robot
-            )
-
-        return assignments
+            robot.status = "BUSY"
+            robot.current_task = task
+            robot.target_x = task.target_x
+            robot.target_y = task.target_y
 
     def get_blocked_positions(self, current_robot):
-        blocked_positions = set()
+        return [
+            (robot.x, robot.y)
+            for robot in self.robots
+            if robot.name != current_robot.name
+            and robot.status != "FAILED"
+        ]
 
-        for robot in self.robots:
-            if robot is current_robot:
-                continue
-
-            blocked_positions.add(
-                (robot.x, robot.y)
-            )
-
-        return blocked_positions
-
-    def replan_path(self, robot, environment):
-        start = (robot.x, robot.y)
-        target = (robot.target_x, robot.target_y)
-
-        blocked_positions = self.get_blocked_positions(
-            robot
-        )
+    def calculate_path(self, robot, environment):
+        if robot.current_task is None:
+            return None
 
         return environment.find_path(
-            start,
-            target,
-            blocked_positions
+            (robot.x, robot.y),
+            (
+                robot.current_task.target_x,
+                robot.current_task.target_y
+            ),
+            self.get_blocked_positions(robot)
         )
 
-    def is_position_occupied(self, position, current_robot):
-        for robot in self.robots:
-            if robot is current_robot:
-                continue
+    def complete_task(self, robot):
+        if robot.current_task is None:
+            return
 
-            if (robot.x, robot.y) == position:
-                return True
+        robot.current_task.status = "COMPLETED"
+        robot.current_task.assigned_robot = robot.name
+        robot.completed_tasks += 1
 
-        return False
+        robot.current_task = None
+        robot.target_x = None
+        robot.target_y = None
+        robot.status = "IDLE"
 
-    def execute_paths(self, paths, environment):
-        active_paths = dict(paths)
+    def fail_robot(self, robot):
+        if robot.current_task is not None:
+            robot.current_task.status = "PENDING"
+            robot.current_task.assigned_robot = None
 
-        path_indices = {
-            robot.name: 1
-            for robot in self.robots
-        }
+        robot.current_task = None
+        robot.target_x = None
+        robot.target_y = None
+        robot.status = "FAILED"
 
-        max_steps = 100
+    def has_pending_tasks(self):
+        return any(
+            task.status == "PENDING"
+            for task in self.tasks
+        )
 
-        for step in range(1, max_steps + 1):
-            print("Step", step)
 
-            all_targets_reached = True
+class SimulationEngine:
+    def __init__(
+        self,
+        environment,
+        fleet,
+        fault_detector,
+        max_steps=100
+    ):
+        self.environment = environment
+        self.fleet = fleet
+        self.fault_detector = fault_detector
+        self.max_steps = max_steps
+        self.current_step = 0
 
-            for robot in self.robots:
-                if (
-                    robot.x == robot.target_x
-                    and robot.y == robot.target_y
-                ):
-                    print(
-                        robot.name,
-                        "TARGET_REACHED"
-                    )
+    def run(self):
+        paths = {}
+        path_indices = {}
+
+        for step in range(self.max_steps):
+            self.current_step = step + 1
+
+            self.fault_detector.analyze_fleet(
+                self.fleet
+            )
+
+            for robot in self.fleet.robots:
+                if robot.status == "FAILED":
+                    self.fleet.fail_robot(robot)
+
+            self.fleet.allocate_tasks()
+
+            active = False
+
+            for robot in self.fleet.robots:
+                if robot.status != "BUSY":
                     continue
 
-                all_targets_reached = False
+                active = True
 
-                path = active_paths.get(
-                    robot.name
-                )
+                if robot.current_task is None:
+                    continue
+
+                robot.current_task.steps_taken += 1
+
+                path = paths.get(robot.name)
 
                 if path is None:
-                    print(
-                        robot.name,
-                        "NO_PATH"
+                    path = self.fleet.calculate_path(
+                        robot,
+                        self.environment
                     )
+
+                    paths[robot.name] = path
+                    path_indices[robot.name] = 1
+
+                if path is None:
+                    self.fleet.fail_robot(robot)
+                    paths[robot.name] = None
                     continue
 
-                path_index = path_indices[
-                    robot.name
-                ]
+                index = path_indices[robot.name]
 
-                if path_index >= len(path):
-                    new_path = self.replan_path(
-                        robot,
-                        environment
-                    )
-
-                    if new_path is None:
-                        print(
-                            robot.name,
-                            "NO_PATH"
-                        )
-                        continue
-
-                    active_paths[
-                        robot.name
-                    ] = new_path
-
-                    path_indices[
-                        robot.name
-                    ] = 1
-
-                    path = new_path
-                    path_index = 1
-
-                next_position = path[
-                    path_index
-                ]
-
-                if self.is_position_occupied(
-                    next_position,
-                    robot
-                ):
-                    print(
-                        robot.name,
-                        "ROBOT_COLLISION"
-                    )
-
-                    new_path = self.replan_path(
-                        robot,
-                        environment
-                    )
-
-                    if new_path is not None:
-                        active_paths[
-                            robot.name
-                        ] = new_path
-
-                        path_indices[
-                            robot.name
-                        ] = 1
-
-                        print(
-                            robot.name,
-                            "REPLANNED"
-                        )
-                    else:
-                        print(
-                            robot.name,
-                            "NO_PATH"
-                        )
-
+                if index >= len(path):
+                    self.fleet.complete_task(robot)
+                    paths[robot.name] = None
                     continue
 
-                dx = (
-                    next_position[0]
-                    - robot.x
-                )
+                next_position = path[index]
 
-                dy = (
-                    next_position[1]
-                    - robot.y
-                )
+                if next_position in self.fleet.get_blocked_positions(robot):
+                    paths[robot.name] = self.fleet.calculate_path(
+                        robot,
+                        self.environment
+                    )
+
+                    path_indices[robot.name] = 1
+                    continue
+
+                dx = next_position[0] - robot.x
+                dy = next_position[1] - robot.y
 
                 result = robot.move(
                     dx,
                     dy,
-                    environment
+                    self.environment
                 )
 
                 if result == "MOVED":
-                    path_indices[
-                        robot.name
-                    ] += 1
+                    path_indices[robot.name] += 1
 
-                    print(
-                        robot.name,
-                        "moved to",
-                        (robot.x, robot.y)
-                    )
-                else:
-                    print(
-                        robot.name,
-                        result
-                    )
+                self.fault_detector.analyze_robot(
+                    robot
+                )
 
-            print()
+                if robot.status == "FAILED":
+                    self.fleet.fail_robot(robot)
+                    paths[robot.name] = None
+                    continue
 
-            if all_targets_reached:
+                if (
+                    robot.x == robot.target_x
+                    and robot.y == robot.target_y
+                ):
+                    self.fleet.complete_task(robot)
+                    paths[robot.name] = None
+
+            if not active and not self.fleet.has_pending_tasks():
                 break
+
+        return self.current_step
+
+
+class SimulationReport:
+    def __init__(self, fleet, fault_detector, steps):
+        self.fleet = fleet
+        self.fault_detector = fault_detector
+        self.steps = steps
+
+    def completed_tasks(self):
+        return sum(
+            task.status == "COMPLETED"
+            for task in self.fleet.tasks
+        )
+
+    def pending_tasks(self):
+        return sum(
+            task.status == "PENDING"
+            for task in self.fleet.tasks
+        )
+
+    def assigned_tasks(self):
+        return sum(
+            task.status == "ASSIGNED"
+            for task in self.fleet.tasks
+        )
+
+    def success_rate(self):
+        total = len(self.fleet.tasks)
+
+        if total == 0:
+            return 0
+
+        return (
+            self.completed_tasks()
+            / total
+        ) * 100
+
+    def total_distance(self):
+        return sum(
+            robot.distance_travelled
+            for robot in self.fleet.robots
+        )
+
+    def total_battery_used(self):
+        return sum(
+            robot.initial_battery - robot.battery
+            for robot in self.fleet.robots
+        )
+
+    def failed_robots(self):
+        return sum(
+            robot.status == "FAILED"
+            for robot in self.fleet.robots
+        )
+
+    def maintenance_robots(self):
+        return sum(
+            robot.maintenance_required
+            for robot in self.fleet.robots
+        )
+
+    def display(self):
+        print()
+        print("========== SIMULATION REPORT ==========")
+        print("Simulation Steps:", self.steps)
+        print("Total Tasks:", len(self.fleet.tasks))
+        print("Completed Tasks:", self.completed_tasks())
+        print("Assigned Tasks:", self.assigned_tasks())
+        print("Pending Tasks:", self.pending_tasks())
+        print(
+            "Success Rate:",
+            round(self.success_rate(), 2),
+            "%"
+        )
+        print(
+            "Total Distance:",
+            self.total_distance()
+        )
+        print(
+            "Total Battery Used:",
+            self.total_battery_used()
+        )
+        print(
+            "Fault Events:",
+            len(self.fault_detector.fault_history)
+        )
+        print(
+            "Failed Robots:",
+            self.failed_robots()
+        )
+        print(
+            "Maintenance Required:",
+            self.maintenance_robots()
+        )
+
+        print()
+        print("Robot Performance")
+
+        for robot in self.fleet.robots:
+            maintenance = (
+                self.fault_detector.predict_maintenance(
+                    robot
+                )
+            )
+
+            print(
+                robot.name,
+                "| Status:",
+                robot.status,
+                "| Battery:",
+                robot.battery,
+                "| Distance:",
+                robot.distance_travelled,
+                "| Tasks:",
+                robot.completed_tasks,
+                "| Maintenance:",
+                maintenance
+            )
+
+        print()
+        print("Task Results")
+
+        for task in self.fleet.tasks:
+            print(
+                task.task_id,
+                "| Status:",
+                task.status,
+                "| Robot:",
+                task.assigned_robot,
+                "| Steps:",
+                task.steps_taken
+            )
+
+        print()
+        print("Fault History")
+
+        if not self.fault_detector.fault_history:
+            print("No faults detected.")
+        else:
+            for event in self.fault_detector.fault_history:
+                print(
+                    event["robot"],
+                    "|",
+                    event["fault"],
+                    "| Battery:",
+                    event["battery"],
+                    "| Temperature:",
+                    event["temperature"]
+                )
+
+        print("=======================================")
 
 
 environment = Environment(
@@ -547,16 +699,13 @@ environment = Environment(
     ]
 )
 
-
 robot1 = Robot(
     "Aegis-01",
     80,
     35,
     2.5,
     3,
-    3,
-    8,
-    8
+    3
 )
 
 robot2 = Robot(
@@ -565,22 +714,17 @@ robot2 = Robot(
     40,
     2,
     5,
-    3,
-    1,
-    8
+    3
 )
 
 robot3 = Robot(
     "Aegis-03",
-    10,
-    75,
+    25,
+    65,
     3.5,
     10,
-    7,
-    2,
-    2
+    7
 )
-
 
 fleet = Fleet()
 
@@ -588,50 +732,41 @@ fleet.add_robot(robot1)
 fleet.add_robot(robot2)
 fleet.add_robot(robot3)
 
-
-tasks = [
-    Task("Task-01", 8, 8),
-    Task("Task-02", 1, 8),
-    Task("Task-03", 2, 2)
-]
-
-
-assignments = fleet.allocate_tasks(tasks)
-
-print("Task Assignments:")
-print()
-
-for task_id, robot_name in assignments.items():
-    print(
-        task_id,
-        "->",
-        robot_name
-    )
-
-print()
-
-
-paths = fleet.calculate_paths(
-    environment
+fleet.add_task(
+    Task("Task-01", 8, 8, 3)
 )
 
-for robot_name, path in paths.items():
-    print(
-        robot_name,
-        "Path:"
-    )
-    print(path)
-    print()
-
-
-print("Synchronized Fleet Execution:")
-print()
-
-fleet.execute_paths(
-    paths,
-    environment
+fleet.add_task(
+    Task("Task-02", 1, 8, 2)
 )
 
+fleet.add_task(
+    Task("Task-03", 2, 2, 1)
+)
 
-print("Fleet Robots:")
-fleet.display_robots()
+fleet.add_task(
+    Task("Task-04", 9, 9, 2)
+)
+
+fleet.add_task(
+    Task("Task-05", 1, 1, 1)
+)
+
+fault_detector = FaultDetector()
+
+simulation = SimulationEngine(
+    environment,
+    fleet,
+    fault_detector,
+    max_steps=100
+)
+
+steps = simulation.run()
+
+report = SimulationReport(
+    fleet,
+    fault_detector,
+    steps
+)
+
+report.display()
