@@ -34,12 +34,18 @@ class Robot:
         status = self.health_check()
         print("Status:", status)
 
+    def consume_battery(self, amount):
+        self.battery -= amount
+
 
 robot1 = Robot("Aegis-01", 80, 35, 2.5)
 robot2 = Robot("Aegis-02", 60, 40, 2)
 robot3 = Robot("Aegis-03", 10, 75, 3.5)
 
 robots = [robot1, robot2, robot3]
+
+for robot in robots:
+    robot.consume_battery(10)
 
 for robot in robots:
     print()
