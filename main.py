@@ -37,6 +37,9 @@ class Robot:
     def consume_battery(self, amount):
         self.battery -= amount
 
+        if self.battery < 0:
+            self.battery = 0
+
 
 robot1 = Robot("Aegis-01", 80, 35, 2.5)
 robot2 = Robot("Aegis-02", 60, 40, 2)
