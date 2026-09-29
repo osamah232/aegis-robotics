@@ -280,6 +280,40 @@ class Robot:
         return "PATH_INCOMPLETE"
 
 
+class Fleet:
+    def __init__(self):
+        self.robots = []
+
+    def add_robot(self, robot):
+        self.robots.append(robot)
+
+    def display_robots(self):
+        for robot in self.robots:
+            robot.display_info()
+
+    def calculate_paths(self, environment):
+        paths = {}
+
+        for robot in self.robots:
+            start = (robot.x, robot.y)
+            target = (robot.target_x, robot.target_y)
+
+            paths[robot.name] = environment.find_path(
+                start,
+                target
+            )
+
+        return paths
+
+    def execute_paths(self, paths, environment):
+        for robot in self.robots:
+            path = paths.get(robot.name)
+
+            print(f"{robot.name} Execution:")
+            print(robot.follow_path(path, environment))
+            print()
+
+
 environment = Environment(
     10,
     10,
@@ -325,78 +359,20 @@ robot3 = Robot(
     2
 )
 
-robot1.consume_battery(10)
-robot2.consume_battery(10)
-robot3.consume_battery(15)
+fleet = Fleet()
 
-result2 = robot2.move(-1, 2, environment)
-result3 = robot3.move(3, -2, environment)
+fleet.add_robot(robot1)
+fleet.add_robot(robot2)
+fleet.add_robot(robot3)
 
-print("Aegis-02:", result2)
-print("Aegis-03:", result3)
-print()
+paths = fleet.calculate_paths(environment)
 
-print("Aegis-01 Sensor:")
-print(robot1.scan(environment))
-print()
+for robot_name, path in paths.items():
+    print(f"{robot_name} Path:")
+    print(path)
+    print()
 
-print("Aegis-01 Next Move:")
-print(robot1.get_next_move(environment))
-print()
+fleet.execute_paths(paths, environment)
 
-print("Aegis-01 Move To Target:")
-print(robot1.move_to_target(environment))
-print()
-
-path = environment.find_path(
-    (robot1.x, robot1.y),
-    (robot1.target_x, robot1.target_y)
-)
-
-print("Aegis-01 Path:")
-print(path)
-print()
-
-print("Aegis-01 Follow Path:")
-print(robot1.follow_path(path, environment))
-print()
-
-print("BFS Test 1:")
-test_path_1 = environment.find_path(
-    (1, 1),
-    (10, 10)
-)
-print(test_path_1)
-print()
-
-print("BFS Test 2:")
-test_path_2 = environment.find_path(
-    (1, 1),
-    (8, 8)
-)
-print(test_path_2)
-print()
-
-blocked_environment = Environment(
-    5,
-    5,
-    [
-        (2, 1),
-        (2, 2),
-        (2, 3),
-        (2, 4),
-        (2, 5)
-    ]
-)
-
-print("BFS Test 3:")
-test_path_3 = blocked_environment.find_path(
-    (1, 3),
-    (3, 3)
-)
-print(test_path_3)
-print()
-
-robot1.display_info()
-robot2.display_info()
-robot3.display_info()
+print("Fleet Robots:")
+fleet.display_robots()
