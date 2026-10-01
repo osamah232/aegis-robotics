@@ -1,5 +1,8 @@
 from collections import deque
 
+from maintenance_risk import MaintenanceRiskModel
+from live_risk import LiveRiskCalculator
+
 
 class Environment:
     def __init__(self, width, height, obstacles):
@@ -135,6 +138,8 @@ class Robot:
         self.distance_travelled = 0
         self.active_steps = 0
         self.completed_tasks = 0
+        self.failure_probability = 0.0
+        self.maintenance_risk = "LOW"
 
     def health_check(self):
         if self.battery <= 10 or self.temperature >= 80:
@@ -148,6 +153,13 @@ class Robot:
     def consume_battery(self, amount):
         self.battery = max(0, self.battery - amount)
 
+    def update_temperature(self):
+        temperature_increase = self.speed * 0.4
+        self.temperature += temperature_increase
+
+        if self.temperature > 40:
+            self.temperature -= 0.05
+
     def move(self, dx, dy, environment):
         new_x = self.x + dx
         new_y = self.y + dy
@@ -160,7 +172,18 @@ class Robot:
 
         self.x = new_x
         self.y = new_y
-        self.consume_battery(1)
+
+        battery_consumption = max(
+            1,
+            round(self.speed * 0.5)
+        )
+
+        self.consume_battery(
+            battery_consumption
+        )
+
+        self.update_temperature()
+
         self.distance_travelled += abs(dx) + abs(dy)
         self.active_steps += 1
 
@@ -191,7 +214,14 @@ class Robot:
             "Distance:",
             self.distance_travelled,
             "Tasks:",
-            self.completed_tasks
+            self.completed_tasks,
+            "Risk:",
+            self.maintenance_risk,
+            "Failure Probability:",
+            round(
+                self.failure_probability,
+                3
+            )
         )
 
 
@@ -298,17 +328,16 @@ class Fleet:
 
     def get_available_robots(self):
         return [
-            robot
-            for robot in self.robots
-            if robot.status == "IDLE"
-            and robot.health_check() != "CRITICAL"
-            and not robot.maintenance_required
-        ]
+        robot
+        for robot in self.robots
+        if robot.status == "IDLE"
+        and robot.current_task is None
+        and robot.maintenance_risk != "HIGH"
+    ]
 
     def calculate_distance(self, robot, task):
-        return (
-            abs(robot.x - task.target_x)
-            + abs(robot.y - task.target_y)
+        return abs(robot.x - task.target_x) + abs(
+            robot.y - task.target_y
         )
 
     def calculate_robot_score(self, robot, task):
@@ -318,12 +347,11 @@ class Fleet:
         )
 
         battery_score = (
-            100 - robot.battery
-        ) * 0.3
+            (100 - robot.battery) * 0.3
+        )
 
-        speed_score = 10 / max(
-            robot.speed,
-            0.1
+        speed_score = (
+            10 / max(robot.speed, 0.1)
         )
 
         health_score = 0
@@ -356,50 +384,58 @@ class Fleet:
             if not available_robots:
                 break
 
-            robot = min(
-                available_robots,
-                key=lambda current_robot:
-                self.calculate_robot_score(
-                    current_robot,
+            available_robots.sort(
+                key=lambda robot: self.calculate_robot_score(
+                    robot,
                     task
                 )
             )
 
-            task.status = "ASSIGNED"
-            task.assigned_robot = robot.name
+            robot = available_robots[0]
 
-            robot.status = "BUSY"
+            task.assigned_robot = robot.name
+            task.status = "ASSIGNED"
+
             robot.current_task = task
             robot.target_x = task.target_x
             robot.target_y = task.target_y
+            robot.status = "BUSY"
 
-    def get_blocked_positions(self, current_robot):
-        return [
-            (robot.x, robot.y)
-            for robot in self.robots
-            if robot.name != current_robot.name
-            and robot.status != "FAILED"
-        ]
+    def get_blocked_positions(self, robot):
+        return {
+            (other.x, other.y)
+            for other in self.robots
+            if other.name != robot.name
+            and other.status != "FAILED"
+        }
 
     def calculate_path(self, robot, environment):
         if robot.current_task is None:
             return None
 
+        start = (robot.x, robot.y)
+        target = robot.current_task.get_target()
+
+        blocked_positions = self.get_blocked_positions(
+            robot
+        )
+
+        blocked_positions.discard(target)
+
         return environment.find_path(
-            (robot.x, robot.y),
-            (
-                robot.current_task.target_x,
-                robot.current_task.target_y
-            ),
-            self.get_blocked_positions(robot)
+            start,
+            target,
+            blocked_positions
         )
 
     def complete_task(self, robot):
-        if robot.current_task is None:
+        task = robot.current_task
+
+        if task is None:
             return
 
-        robot.current_task.status = "COMPLETED"
-        robot.current_task.assigned_robot = robot.name
+        task.status = "COMPLETED"
+        task.steps_taken = robot.active_steps
         robot.completed_tasks += 1
 
         robot.current_task = None
@@ -408,19 +444,22 @@ class Fleet:
         robot.status = "IDLE"
 
     def fail_robot(self, robot):
+        robot.status = "FAILED"
+
         if robot.current_task is not None:
             robot.current_task.status = "PENDING"
             robot.current_task.assigned_robot = None
+            robot.current_task = None
 
-        robot.current_task = None
         robot.target_x = None
         robot.target_y = None
-        robot.status = "FAILED"
 
     def has_pending_tasks(self):
         return any(
             task.status == "PENDING"
             for task in self.tasks
+     
+            
         )
 
 
@@ -430,17 +469,49 @@ class SimulationEngine:
         environment,
         fleet,
         fault_detector,
-        max_steps=100
+        max_steps=100,
+        risk_model=None
     ):
         self.environment = environment
         self.fleet = fleet
         self.fault_detector = fault_detector
         self.max_steps = max_steps
         self.current_step = 0
+        self.risk_calculator = None
+
+        if risk_model is not None:
+            self.risk_calculator = LiveRiskCalculator(
+                risk_model
+            )
+
+    def update_risk(self, robot):
+        if self.risk_calculator is None:
+            return
+
+        result = self.risk_calculator.predict(
+            robot
+        )
+
+        if result is None:
+            return
+
+        robot.failure_probability = result[
+            "probability"
+        ]
+
+        robot.maintenance_risk = result[
+            "risk"
+        ]
+
+    def update_fleet_risk(self):
+        for robot in self.fleet.robots:
+            self.update_risk(robot)
 
     def run(self):
-        paths = {}
-        path_indices = {}
+        for robot in self.fleet.robots:
+            robot.record_telemetry()
+
+        self.update_fleet_risk()
 
         for step in range(self.max_steps):
             self.current_step = step + 1
@@ -455,52 +526,32 @@ class SimulationEngine:
 
             self.fleet.allocate_tasks()
 
-            active = False
+            active_robots = 0
 
             for robot in self.fleet.robots:
-                if robot.status != "BUSY":
+                if (
+                    robot.status != "BUSY"
+                    or robot.current_task is None
+                ):
                     continue
 
-                active = True
+                active_robots += 1
 
-                if robot.current_task is None:
-                    continue
-
-                robot.current_task.steps_taken += 1
-
-                path = paths.get(robot.name)
+                path = self.fleet.calculate_path(
+                    robot,
+                    self.environment
+                )
 
                 if path is None:
-                    path = self.fleet.calculate_path(
-                        robot,
-                        self.environment
+                    continue
+
+                if len(path) <= 1:
+                    self.fleet.complete_task(
+                        robot
                     )
-
-                    paths[robot.name] = path
-                    path_indices[robot.name] = 1
-
-                if path is None:
-                    self.fleet.fail_robot(robot)
-                    paths[robot.name] = None
                     continue
 
-                index = path_indices[robot.name]
-
-                if index >= len(path):
-                    self.fleet.complete_task(robot)
-                    paths[robot.name] = None
-                    continue
-
-                next_position = path[index]
-
-                if next_position in self.fleet.get_blocked_positions(robot):
-                    paths[robot.name] = self.fleet.calculate_path(
-                        robot,
-                        self.environment
-                    )
-
-                    path_indices[robot.name] = 1
-                    continue
+                next_position = path[1]
 
                 dx = next_position[0] - robot.x
                 dy = next_position[1] - robot.y
@@ -511,54 +562,69 @@ class SimulationEngine:
                     self.environment
                 )
 
-                if result == "MOVED":
-                    path_indices[robot.name] += 1
-
-                self.fault_detector.analyze_robot(
-                    robot
-                )
-
-                if robot.status == "FAILED":
-                    self.fleet.fail_robot(robot)
-                    paths[robot.name] = None
+                if result != "MOVED":
                     continue
 
                 if (
-                    robot.x == robot.target_x
-                    and robot.y == robot.target_y
-                ):
-                    self.fleet.complete_task(robot)
-                    paths[robot.name] = None
+                    robot.x,
+                    robot.y
+                ) == robot.current_task.get_target():
+                    self.fleet.complete_task(
+                        robot
+                    )
 
-            if not active and not self.fleet.has_pending_tasks():
+                self.update_risk(robot)
+
+            self.fault_detector.analyze_fleet(
+                self.fleet
+            )
+
+            for robot in self.fleet.robots:
+                if robot.status == "FAILED":
+                    self.fleet.fail_robot(robot)
+
+            self.update_fleet_risk()
+
+            if (
+                not self.fleet.has_pending_tasks()
+                and active_robots == 0
+            ):
                 break
 
         return self.current_step
 
 
 class SimulationReport:
-    def __init__(self, fleet, fault_detector, steps):
+    def __init__(
+        self,
+        fleet,
+        fault_detector,
+        steps
+    ):
         self.fleet = fleet
         self.fault_detector = fault_detector
         self.steps = steps
 
     def completed_tasks(self):
-        return sum(
-            task.status == "COMPLETED"
+        return [
+            task
             for task in self.fleet.tasks
-        )
+            if task.status == "COMPLETED"
+        ]
 
     def pending_tasks(self):
-        return sum(
-            task.status == "PENDING"
+        return [
+            task
             for task in self.fleet.tasks
-        )
+            if task.status == "PENDING"
+        ]
 
     def assigned_tasks(self):
-        return sum(
-            task.status == "ASSIGNED"
+        return [
+            task
             for task in self.fleet.tasks
-        )
+            if task.status == "ASSIGNED"
+        ]
 
     def success_rate(self):
         total = len(self.fleet.tasks)
@@ -567,9 +633,10 @@ class SimulationReport:
             return 0
 
         return (
-            self.completed_tasks()
+            len(self.completed_tasks())
             / total
-        ) * 100
+            * 100
+        )
 
     def total_distance(self):
         return sum(
@@ -584,74 +651,93 @@ class SimulationReport:
         )
 
     def failed_robots(self):
-        return sum(
-            robot.status == "FAILED"
+        return [
+            robot
             for robot in self.fleet.robots
-        )
+            if robot.status == "FAILED"
+        ]
 
     def maintenance_robots(self):
-        return sum(
-            robot.maintenance_required
+        return [
+            robot
             for robot in self.fleet.robots
-        )
+            if robot.maintenance_required
+            or robot.maintenance_risk in [
+                "MEDIUM",
+                "HIGH"
+            ]
+        ]
 
     def display(self):
         print()
-        print("========== SIMULATION REPORT ==========")
-        print("Simulation Steps:", self.steps)
-        print("Total Tasks:", len(self.fleet.tasks))
-        print("Completed Tasks:", self.completed_tasks())
-        print("Assigned Tasks:", self.assigned_tasks())
-        print("Pending Tasks:", self.pending_tasks())
+        print("Simulation Report")
+        print("-----------------")
+        print("Simulation steps:", self.steps)
+        print("Total tasks:", len(self.fleet.tasks))
         print(
-            "Success Rate:",
+            "Completed tasks:",
+            len(self.completed_tasks())
+        )
+        print(
+            "Assigned tasks:",
+            len(self.assigned_tasks())
+        )
+        print(
+            "Pending tasks:",
+            len(self.pending_tasks())
+        )
+        print(
+            "Success rate:",
             round(self.success_rate(), 2),
             "%"
         )
         print(
-            "Total Distance:",
+            "Total distance:",
             self.total_distance()
         )
         print(
-            "Total Battery Used:",
+            "Total battery used:",
             self.total_battery_used()
         )
+
+        print()
+        print("Predictive Maintenance")
+
+        for robot in self.fleet.robots:
+            print(
+                robot.name,
+                "Probability:",
+                round(
+                    robot.failure_probability,
+                    3
+                ),
+                "Risk:",
+                robot.maintenance_risk
+            )
+
+        print()
         print(
-            "Fault Events:",
-            len(self.fault_detector.fault_history)
+            "Fault events:",
+            len(
+                self.fault_detector.fault_history
+            )
         )
+
         print(
-            "Failed Robots:",
-            self.failed_robots()
+            "Failed robots:",
+            len(self.failed_robots())
         )
+
         print(
-            "Maintenance Required:",
-            self.maintenance_robots()
+            "Maintenance required:",
+            len(self.maintenance_robots())
         )
 
         print()
         print("Robot Performance")
 
         for robot in self.fleet.robots:
-            maintenance = (
-                self.fault_detector.predict_maintenance(
-                    robot
-                )
-            )
-
-            print(
-                robot.name,
-                "| Status:",
-                robot.status,
-                "| Battery:",
-                robot.battery,
-                "| Distance:",
-                robot.distance_travelled,
-                "| Tasks:",
-                robot.completed_tasks,
-                "| Maintenance:",
-                maintenance
-            )
+            robot.display_info()
 
         print()
         print("Task Results")
@@ -659,32 +745,14 @@ class SimulationReport:
         for task in self.fleet.tasks:
             print(
                 task.task_id,
-                "| Status:",
+                "Status:",
                 task.status,
-                "| Robot:",
-                task.assigned_robot,
-                "| Steps:",
-                task.steps_taken
+                "Robot:",
+                task.assigned_robot
             )
 
         print()
-        print("Fault History")
-
-        if not self.fault_detector.fault_history:
-            print("No faults detected.")
-        else:
-            for event in self.fault_detector.fault_history:
-                print(
-                    event["robot"],
-                    "|",
-                    event["fault"],
-                    "| Battery:",
-                    event["battery"],
-                    "| Temperature:",
-                    event["temperature"]
-                )
-
-        print("=======================================")
+        self.fault_detector.display_faults()
 
 
 environment = Environment(
@@ -698,6 +766,8 @@ environment = Environment(
         (8, 2)
     ]
 )
+
+fleet = Fleet()
 
 robot1 = Robot(
     "Aegis-01",
@@ -726,8 +796,6 @@ robot3 = Robot(
     7
 )
 
-fleet = Fleet()
-
 fleet.add_robot(robot1)
 fleet.add_robot(robot2)
 fleet.add_robot(robot3)
@@ -754,11 +822,18 @@ fleet.add_task(
 
 fault_detector = FaultDetector()
 
+risk_model = MaintenanceRiskModel()
+
+risk_model.train(
+    "data/predictive_features.csv"
+)
+
 simulation = SimulationEngine(
     environment,
     fleet,
     fault_detector,
-    max_steps=100
+    max_steps=100,
+    risk_model=risk_model
 )
 
 steps = simulation.run()
